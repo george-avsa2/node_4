@@ -8,7 +8,30 @@ const updateMovies = require("./helpers/updateMovies");
 const checkMovie = require("./helpers/checkMovie");
 const deleteMovie = require("./helpers/deleteMovie");
 
+const bcrypt = require("bcryptjs");
+const salt = bcrypt.genSaltSync(10);
+
+const jwt = require("jsonwebtoken");
+const JWT_SECRET = require("./constants/jwtsecret");
+
 let movies;
+let users;
+
+const auth = (req, res, next) => {
+  const authHeader = req.headers["authorization"];
+  const token = authHeader && authHeader.split(" ")[1];
+
+  if (token == null) return res.status(401).json({ message: "No token" });
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({ message: "token expired" });
+    req.user = user;
+    next();
+  });
+  next();
+};
+
+app.use("/movies", auth);
 
 app.use(express.json());
 
@@ -25,6 +48,82 @@ app.get("/movies/:id", (req, res) => {
   } else {
     res.status(404).json({ message: "movie not found" });
   }
+});
+
+app.post("/api/auth/register", (req, res) => {
+  const data = {
+    email: req?.body?.email || null,
+    password: req?.body?.password || null,
+  };
+
+  const errors = [];
+
+  if (!data.password) {
+    errors.push("missing required field: password");
+  }
+
+  if (!data.email) {
+    errors.push("Missing required field: email");
+  }
+
+  if (
+    data.password &&
+    (data.password?.length > 12 || data.password.length < 6)
+  ) {
+    errors.push("Password should be more than 5 and less than 13 symbols");
+  }
+
+  if (errors.length) {
+    return res.status(400).json({ mesage: `: ${errors.join("; ")}` });
+  }
+
+  var hash = bcrypt.hashSync(data.password, salt);
+  users.push({ email: data.email, hash });
+  res.status(201).json({ message: "Manager created" });
+});
+
+app.post("/api/auth/login", (req, res) => {
+  const data = {
+    email: req?.body?.email || null,
+    password: req?.body?.password || null,
+  };
+
+  const errors = [];
+
+  if (!data.password) {
+    errors.push("missing required field: password");
+  }
+
+  if (!data.email) {
+    errors.push("Missing required field: email");
+  }
+
+  if (errors.length) {
+    return res.status(400).json({ mesage: `: ${errors.join("; ")}` });
+  }
+
+  const manager = users?.find((manager) => manager.email === data.email);
+
+  if (!manager) {
+    return res.status(403).json({ message: "Wrong email" });
+  }
+
+  if (!bcrypt.compareSync(data.password, manager.hash)) {
+    errors.push("Password incorrect");
+  }
+
+  var token = jwt.sign(
+    {
+      exp: Math.floor(Date.now() / 1000) + 5 * 60,
+      data: {
+        id: manager.id,
+        email: manager.email,
+      },
+    },
+    JWT_SECRET
+  );
+
+  res.status(200).json({ token });
 });
 
 app.post("/movies", (req, res) => {
@@ -78,14 +177,14 @@ app.use((req, res, next) => {
   res.status(404).json({ message: "Route not found" });
 });
 
-const loadmoviesFromFile = async () => {
+const loadFromFile = async (file) => {
   try {
     const data = await fs.readFile(
-      path.join(process.cwd(), "data", "movies-min.json"),
+      path.join(process.cwd(), "data", file),
       "utf-8"
     );
-    movies = JSON.parse(data);
-    console.log("movies data successfully loaded.");
+    console.log(`Data from ${file} successfully loaded.`);
+    return JSON.parse(data);
   } catch (err) {
     console.error("Error loading movies data:", err);
     throw err;
@@ -94,7 +193,8 @@ const loadmoviesFromFile = async () => {
 
 const startServer = async () => {
   try {
-    await loadmoviesFromFile();
+    movies = await loadFromFile("movies.json");
+    users = await loadFromFile("manager.json");
     app.listen(PORT, () => {
       console.log(`Server is running on http://localhost:${PORT}`);
     });
@@ -107,11 +207,18 @@ startServer();
 
 process.on("SIGINT", async () => {
   fsCallback.writeFile(
-    path.join(__dirname, "data/movies.json"),
-    JSON.stringify(movies),
+    path.join(__dirname, "data/manager.json"),
+    JSON.stringify(users),
     "utf-8",
     () => {
-      process.exit();
+      fsCallback.writeFile(
+        path.join(__dirname, "data/movies.json"),
+        JSON.stringify(movies),
+        "utf-8",
+        () => {
+          process.exit();
+        }
+      );
     }
   );
 });
