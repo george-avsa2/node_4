@@ -8,11 +8,13 @@ const updateMovies = require("./helpers/updateMovies");
 const checkMovie = require("./helpers/checkMovie");
 const deleteMovie = require("./helpers/deleteMovie");
 
+require("dotenv").config();
+
 const bcrypt = require("bcryptjs");
 const salt = bcrypt.genSaltSync(10);
 
 const jwt = require("jsonwebtoken");
-const JWT_SECRET = require("./constants/jwtsecret");
+const { v4: uuidv4 } = require("uuid");
 
 let movies;
 let users;
@@ -23,37 +25,23 @@ const auth = (req, res, next) => {
 
   if (token == null) return res.status(401).json({ message: "No token" });
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
     if (err) return res.status(403).json({ message: "token expired" });
     req.user = user;
     next();
   });
-  next();
 };
 
 app.use("/movies", auth);
 
 app.use(express.json());
 
-app.get("/movies", (req, res) => {
-  res.json(movies);
-});
-
-app.get("/movies/:id", (req, res) => {
-  const movieId = parseInt(req.params.id);
-  const movie = movies.find((movie) => movie.id === movieId);
-
-  if (movie) {
-    res.json(movie);
-  } else {
-    res.status(404).json({ message: "movie not found" });
-  }
-});
-
 app.post("/api/auth/register", (req, res) => {
   const data = {
+    id: uuidv4(),
     email: req?.body?.email || null,
     password: req?.body?.password || null,
+    super: req?.body?.super || false,
   };
 
   const errors = [];
@@ -98,10 +86,6 @@ app.post("/api/auth/login", (req, res) => {
     errors.push("Missing required field: email");
   }
 
-  if (errors.length) {
-    return res.status(400).json({ mesage: `: ${errors.join("; ")}` });
-  }
-
   const manager = users?.find((manager) => manager.email === data.email);
 
   if (!manager) {
@@ -112,62 +96,94 @@ app.post("/api/auth/login", (req, res) => {
     errors.push("Password incorrect");
   }
 
+  if (errors.length) {
+    return res.status(400).json({ mesage: `: ${errors.join("; ")}` });
+  }
+
   var token = jwt.sign(
     {
       exp: Math.floor(Date.now() / 1000) + 5 * 60,
       data: {
         id: manager.id,
         email: manager.email,
+        super: manager.super,
       },
     },
-    JWT_SECRET
+    process.env.JWT_SECRET
   );
 
   res.status(200).json({ token });
 });
 
-app.post("/movies", (req, res) => {
-  const [newMovie, errors] = checkMovie(req);
+app.get("/movies", (req, res) => {
+  res.json(movies);
+});
 
-  if (errors.length) {
-    return res
-      .status(400)
-      .json({ mesage: `Missing required fields: ${errors.join("; ")}` });
+app.get("/movies/:id", (req, res) => {
+  const movieId = parseInt(req.params.id);
+  const movie = movies.find((movie) => movie.id === movieId);
+
+  if (movie) {
+    res.json(movie);
+  } else {
+    res.status(404).json({ message: "movie not found" });
   }
+});
 
-  movies = updateMovies(movies, newMovie, null);
-  res.status(201).json(newMovie);
+app.post("/movies", (req, res) => {
+  if (req.user?.data?.super) {
+    const [newMovie, errors] = checkMovie(req);
+
+    if (errors.length) {
+      return res
+        .status(400)
+        .json({ mesage: `Missing required fields: ${errors.join("; ")}` });
+    }
+
+    movies = updateMovies(movies, newMovie, null);
+    res.status(201).json(newMovie);
+  } else {
+    res.status(403).json({ message: "Access denied" });
+  }
 });
 
 app.put("/movies/:id", (req, res) => {
-  const movieId = parseInt(req.params.id);
-  const existingMovie = movies.find((movie) => movie.id == movieId);
+  if (req.user?.data?.super) {
+    const movieId = parseInt(req.params.id);
+    const existingMovie = movies.find((movie) => movie.id == movieId);
 
-  if (!existingMovie) {
-    return res
-      .status(400)
-      .json({ message: `No such movie with id: ${movieId}` });
+    if (!existingMovie) {
+      return res
+        .status(400)
+        .json({ message: `No such movie with id: ${movieId}` });
+    }
+
+    const [newMovie, errors] = checkMovie(req, existingMovie);
+
+    if (errors.length) {
+      return res
+        .status(400)
+        .json({ mesage: `Missing required fields: ${errors.join("; ")}` });
+    }
+
+    movies = updateMovies(movies, newMovie, true);
+    res.status(201).json(newMovie);
+  } else {
+    res.status(404).json({ message: "movie not found" });
   }
-
-  const [newMovie, errors] = checkMovie(req, existingMovie);
-
-  if (errors.length) {
-    return res
-      .status(400)
-      .json({ mesage: `Missing required fields: ${errors.join("; ")}` });
-  }
-
-  movies = updateMovies(movies, newMovie, true);
-  res.status(201).json(newMovie);
 });
 
 app.delete("/movies/:id", (req, res) => {
-  const movieId = parseInt(req.params.id);
-  const movie = movies.find((u) => u.id === movieId);
+  if (req.user?.data?.super) {
+    const movieId = parseInt(req.params.id);
+    const movie = movies.find((u) => u.id === movieId);
 
-  if (movie) {
-    movies = deleteMovie(movies, movie);
-    res.status(201).send(movie);
+    if (movie) {
+      movies = deleteMovie(movies, movie);
+      res.status(201).send(movie);
+    } else {
+      res.status(404).json({ message: "movie not found" });
+    }
   } else {
     res.status(404).json({ message: "movie not found" });
   }
